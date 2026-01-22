@@ -1,0 +1,38 @@
+# ======================
+# Python
+# ======================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ======================
+# Virtual environments
+# ======================
+.venv/
+venv/
+env/
+
+# ======================
+# Playwright / runtime data
+# ======================
+storage_state.json
+seen_ids.json
+new_orders.jsonl
+
+# если появятся дополнительные json-файлы с данными
+*.jsonl
+
+# ======================
+# Debug / logs
+# ======================
+debug/
+screenshots/
+*.log
+
+# ======================
+# OS / IDE
+# ======================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
