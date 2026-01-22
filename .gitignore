@@ -36,3 +36,10 @@ screenshots/
 Thumbs.db
 .idea/
 .vscode/
+
+# Файлы бота
+tg_state.json
+.env
+
+# Логгер
+logs/

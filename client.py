@@ -1,5 +1,7 @@
 from playwright.sync_api import Playwright, TimeoutError as PWTimeoutError
 from config import Settings
+import os
+from datetime import datetime
 
 class ProfiClient:
     def __init__(self, p: Playwright, s: Settings):
@@ -39,8 +41,32 @@ class ProfiClient:
         try:
             self.page.wait_for_selector(self.s.card_selector, timeout=self.s.selector_timeout_ms)
         except PWTimeoutError as e:
+            # === DEBUG DUMP ===
+            os.makedirs("logs/debug", exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            try:
+                self.page.screenshot(path=f"logs/debug/no_cards_{ts}.png", full_page=True)
+            except Exception:
+                pass
+
+            try:
+                html = self.page.content()
+                with open(f"logs/debug/no_cards_{ts}.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+            except Exception:
+                pass
+
+            try:
+                url = self.page.url
+                title = self.page.title()
+            except Exception:
+                url, title = "<unknown>", "<unknown>"
+
             raise RuntimeError(
-                "Карточки не появились. Возможные причины: слетела авторизация, капча/проверка, не тот раздел."
+                f"Карточки не появились за {self.s.selector_timeout_ms}мс. "
+                f"URL={url} TITLE={title}. "
+                f"Сохранил logs/debug/no_cards_{ts}.png и .html"
             ) from e
 
     def cards_locator(self):
