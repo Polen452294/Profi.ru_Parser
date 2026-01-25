@@ -1,6 +1,8 @@
 # 🤖 Telegram Parser Bot (поиск заказов для определенной специальности)
 
-<img src="docs/screenshots/parser_example.jpg">
+<p align="center">
+  <img src="docs/screenshots/parser_example.jpg" alt="Пример работы парсера" width="30%">
+</p>
 
 ## 📌 Назначение проекта
 
