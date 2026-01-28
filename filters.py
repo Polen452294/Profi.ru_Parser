@@ -1,26 +1,20 @@
 import re
 from typing import Dict, Any
 
-# Ловим:
-# бот, бота, ботов, боты, ботик
-# чат-бот, чат бот, чатбот, чат-ботов
-# + латиницу: bot, bots, chatbot
-BOT_RE = re.compile(r"(?iu)(?:чат[\s-]?)*бот\w*|\bbot\w*")
 
+EXCEPTION_RE = re.compile(
+    r"(?iu)\b(телеграм|telegram|tg)[\s-]*бот\w*\b"
+)
+MAIN_RE = re.compile(
+    r"(?iu)\b[\w-]{0,4}бот\w*\b"
+)
 
-def order_matches_filter(data: dict) -> bool:
-    # собираем текст из всех возможных полей
-    parts = []
-    for key in ("title", "description", "name", "text", "snippet", "details"):
-        v = data.get(key)
-        if isinstance(v, str) and v.strip():
-            parts.append(v)
+def order_matches_filter(data: Dict[str, Any]) -> bool:
+    title = data.get("title", "")
+    desc = data.get("description", "")
+    text = f"{title} {desc}".strip()
 
-    # если вдруг title/description нет — пробуем собрать всё строковое из data
-    if not parts:
-        for v in data.values():
-            if isinstance(v, str) and v.strip():
-                parts.append(v)
+    if EXCEPTION_RE.search(text):
+        return True
 
-    text = " ".join(parts)
-    return bool(BOT_RE.search(text))
+    return bool(MAIN_RE.search(text))

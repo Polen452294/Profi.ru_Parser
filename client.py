@@ -2,7 +2,7 @@ from asyncio.log import logger
 import os
 from datetime import datetime
 from playwright.sync_api import TimeoutError as PWTimeoutError
-
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 class ProfiClient:
     def __init__(self, playwright, settings):
@@ -42,7 +42,13 @@ class ProfiClient:
         self.page.goto(getattr(self.s, "page_url", "https://profi.ru/backoffice/"), wait_until="domcontentloaded")
 
     def soft_refresh(self):
-        self.page.reload(wait_until="domcontentloaded")
+        try:
+            # иногда domcontentloaded не приходит быстро — ждём больше
+            self.page.reload(wait_until="domcontentloaded", timeout=90_000)
+        except PlaywrightTimeoutError:
+            # не убиваем цикл: просто пробуем вернуться на доску
+            self.logger.warning("soft_refresh timeout. Re-opening board...")
+            self.open_board()
 
     def cards_locator(self):
         return self.page.locator(self.s.card_selector)
