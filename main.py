@@ -28,12 +28,28 @@ def _get_poll_params(s: Settings):
     return int(base), int(jitter)
 
 
+def _start_client(p, s: Settings) -> ProfiClient:
+    """
+    Создаём новый клиент, стартуем его и открываем доску.
+    """
+    client = ProfiClient(p, s).start()
+    client.open_board()
+
+    logger.info(
+        "Page after open_board: title=%r url=%s",
+        client.page.title(),
+        client.page.url
+    )
+    return client
+
+
 def main():
     s = Settings()
 
     with sync_playwright() as p:
         ensure_auth_state(p, s)
 
+        # 2) Загружаем seen_ids и параметры опроса
         seen_ids = load_seen_ids(s.seen_ids_path)
         poll_base, poll_jitter = _get_poll_params(s)
 
@@ -44,99 +60,118 @@ def main():
         )
         logger.info("Loaded seen_ids: %d", len(seen_ids))
 
-        with ProfiClient(p, s) as client:
-            client.open_board()
+        client: ProfiClient | None = None
+        net_errors = 0
 
-            logger.info(
-                "Page after open_board: title=%r url=%s",
-                client.page.title(),
-                client.page.url
-            )
+        try:
+            client = _start_client(p, s)
 
-            # первая попытка
             if not client.wait_cards():
                 logger.warning("No cards on first load. Will keep trying...")
 
             while True:
                 try:
                     client.soft_refresh()
+                    net_errors = 0
 
-                    ok = client.wait_cards()
-                    if not ok:
-                        title = client.page.title()
-                        url = client.page.url
+                except Exception as e:
+                    msg = str(e)
 
-                        if ("вход" in title.lower()) or ("login" in title.lower()):
-                            logger.warning(
-                                "Seems logged out (TITLE=%r, URL=%s). Re-authenticating...",
-                                title, url
-                            )
-                            ensure_auth_state(p, s)
-                            client.open_board()
-                            sleep_human(5, 5)
-                            continue
+                    if "ERR_NAME_NOT_RESOLVED" in msg or "ERR_INTERNET_DISCONNECTED" in msg:
+                        net_errors += 1
+                        logger.warning("Network/DNS error #%d: %s", net_errors, e)
 
-                        logger.warning(
-                            "Cards not found within %sms. Re-opening board. URL=%s TITLE=%r",
-                            s.selector_timeout_ms, url, title
-                        )
-                        client.open_board()
-                        sleep_human(10, 10)
+                        if net_errors >= 3:
+                            logger.warning("Too many network errors подряд -> restarting client")
+
+                            try:
+                                client.close()
+                            except Exception:
+                                logger.exception("Failed to close client on restart")
+
+                            client = _start_client(p, s)
+                            net_errors = 0
+
+                        time.sleep(20)
                         continue
 
-                    cards = client.cards_locator()
-                    new_orders = []
+                    logger.exception("Unexpected error in main loop (refresh). Sleeping and continuing.")
+                    time.sleep(10)
+                    continue
 
-                    for i in range(cards.count()):
-                        data = parse_order_snippet(cards.nth(i))
-                        oid = data.get("order_id")
+                ok = client.wait_cards()
+                if not ok:
+                    title = client.page.title()
+                    url = client.page.url
 
-                        if not oid:
-                            continue
-                        if oid in seen_ids:
-                            continue
+                    if ("вход" in title.lower()) or ("login" in title.lower()):
+                        logger.warning(
+                            "Seems logged out (TITLE=%r, URL=%s). Re-authenticating...",
+                            title, url
+                        )
+                        ensure_auth_state(p, s)
+                        client.open_board()
+                        sleep_human(5, 5)
+                        continue
 
-                        # 🧠 ФИЛЬТР
-                        match = order_matches_filter(data)
+                    logger.warning(
+                        "Cards not found within %sms. Re-opening board. URL=%s TITLE=%r",
+                        s.selector_timeout_ms, url, title
+                    )
+                    client.open_board()
+                    sleep_human(10, 10)
+                    continue
 
-                        if DEBUG_FILTER:
-                            title = data.get("title", "")
-                            desc = data.get("description", "")
-                            text = f"{title} {desc}".lower()
+                cards = client.cards_locator()
+                new_orders = []
 
-                            match = order_matches_filter(data)
+                for i in range(cards.count()):
+                    data = parse_order_snippet(cards.nth(i))
+                    oid = data.get("order_id")
 
-                            logger.info(
-                                "FILTER oid=%s match=%s | title=%r | desc_len=%d | text_has_бот=%s",
-                                oid, match, title, len(desc), ("бот" in text)
-                            )
+                    if not oid:
+                        continue
+                    if oid in seen_ids:
+                        continue
 
-                        if not match:
-                            continue  # ⛔ не бот → не пишем, не запоминаем
+                    match = order_matches_filter(data)
 
-                        # ✅ только здесь считаем заказ обработанным
-                        seen_ids.add(oid)
-                        new_orders.append(data)
-
-                    if new_orders:
-                        for order in new_orders:
-                            append_jsonl(s.out_jsonl_path, order)
-
-                        save_seen_ids(s.seen_ids_path, seen_ids)
+                    if DEBUG_FILTER:
+                        t = data.get("title", "")
+                        d = data.get("description", "")
+                        text = f"{t} {d}".lower()
                         logger.info(
-                            "Saved %d new orders. seen_ids=%d",
-                            len(new_orders), len(seen_ids)
+                            "FILTER oid=%s match=%s | title=%r | desc_len=%d | text_has_бот=%s",
+                            oid, match, t, len(d), ("бот" in text)
                         )
 
-                    sleep_human(poll_base, poll_jitter)
+                    if not match:
+                        continue
 
-                except KeyboardInterrupt:
-                    logger.info("Stopped by user.")
-                    break
+                    seen_ids.add(oid)
+                    new_orders.append(data)
 
+                if new_orders:
+                    for order in new_orders:
+                        append_jsonl(s.out_jsonl_path, order)
+
+                    save_seen_ids(s.seen_ids_path, seen_ids)
+                    logger.info(
+                        "Saved %d new orders. seen_ids=%d",
+                        len(new_orders), len(seen_ids)
+                    )
+
+                sleep_human(poll_base, poll_jitter)
+
+        except KeyboardInterrupt:
+            logger.info("Stopped by user.")
+
+        finally:
+            if client is not None:
+                try:
+                    client.close()
                 except Exception:
-                    logger.exception("Unexpected error in main loop. Sleeping a bit and continuing.")
-                    sleep_human(5, 5)
+                    logger.exception("Failed to close client in finally.")
 
 
 if __name__ == "__main__":

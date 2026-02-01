@@ -1,54 +1,104 @@
-from asyncio.log import logger
+import logging
 import os
 from datetime import datetime
+
 from playwright.sync_api import TimeoutError as PWTimeoutError
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError
+
+
+logger = logging.getLogger("parser.client")
+
 
 class ProfiClient:
     def __init__(self, playwright, settings):
         self.p = playwright
         self.s = settings
+
         self.browser = None
         self.context = None
         self.page = None
 
-    def __enter__(self):
-        # Оставь свои параметры (proxy/user_agent/headless) если они есть в Settings.
-        self.browser = self.p.chromium.launch(headless=getattr(self.s, "headless", False))
+
+    def start(self) -> "ProfiClient":
+        """
+        Явный запуск клиента (вместо `with`), чтобы можно было пересоздавать клиент в рантайме.
+        """
+        if self.browser or self.context or self.page:
+            self.close()
+
+        self.browser = self.p.chromium.launch(
+            headless=getattr(self.s, "headless", False)
+        )
 
         storage_state = getattr(self.s, "auth_state_path", None) or getattr(self.s, "storage_state_path", None)
         if storage_state:
             self.context = self.browser.new_context(storage_state=storage_state)
-            logger.info("Context created. storage_state=%s", getattr(self.s, "auth_state_path", None))
-
+            logger.info("Context created. storage_state=%s", storage_state)
         else:
             self.context = self.browser.new_context()
-            logger.info("Context created. storage_state=%s", getattr(self.s, "auth_state_path", None))
-
+            logger.info("Context created. storage_state=None")
 
         self.page = self.context.new_page()
-        logger.info("Client page: title=%r url=%s", self.page.title(), self.page.url)
+        logger.info("Client page created. title=%r url=%s", self.page.title(), self.page.url)
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def close(self):
+        try:
+            if self.page:
+                try:
+                    self.page.close()
+                except Exception:
+                    pass
+        finally:
+            self.page = None
+
         try:
             if self.context:
-                self.context.close()
+                try:
+                    self.context.close()
+                except Exception:
+                    pass
         finally:
+            self.context = None
+
+        try:
             if self.browser:
-                self.browser.close()
+                try:
+                    self.browser.close()
+                except Exception:
+                    pass
+        finally:
+            self.browser = None
+
+    def __enter__(self) -> "ProfiClient":
+        return self.start()
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
 
     def open_board(self):
-        self.page.goto(getattr(self.s, "page_url", "https://profi.ru/backoffice/"), wait_until="domcontentloaded")
+        url = getattr(self.s, "page_url", "https://profi.ru/backoffice/")
+        self.page.goto(url, wait_until="domcontentloaded")
 
     def soft_refresh(self):
+        """
+        Мягкое обновление страницы.
+        Если reload упал по DNS/интернету — пробуем goto(page_url).
+        """
         try:
-            # иногда domcontentloaded не приходит быстро — ждём больше
             self.page.reload(wait_until="domcontentloaded", timeout=90_000)
-        except PlaywrightTimeoutError:
-            # не убиваем цикл: просто пробуем вернуться на доску
-            self.logger.warning("soft_refresh timeout. Re-opening board...")
-            self.open_board()
+            return
+
+        except PlaywrightError as e:
+            msg = str(e)
+
+            if any(x in msg for x in ("ERR_NAME_NOT_RESOLVED", "ERR_INTERNET_DISCONNECTED")):
+                url = getattr(self.s, "page_url", "https://profi.ru/backoffice/")
+                self.page.goto(url, wait_until="domcontentloaded", timeout=90_000)
+                return
+
+            raise
 
     def cards_locator(self):
         return self.page.locator(self.s.card_selector)
@@ -62,7 +112,7 @@ class ProfiClient:
             self.page.wait_for_selector(
                 self.s.card_selector,
                 timeout=self.s.selector_timeout_ms,
-                state="attached",  # важно: не visible
+                state="attached",
             )
             return True
         except PWTimeoutError:
@@ -89,5 +139,4 @@ class ProfiClient:
             except Exception:
                 pass
         except Exception:
-            # debug не должен ломать основной процесс
             return
